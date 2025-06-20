@@ -1,14 +1,16 @@
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Request
 from typing import List
 from src.models import schemas
 from bson import ObjectId
 from config.db import get_database
 from datetime import datetime
+from src.utils.otel_tracing import traced_function
 
 router = APIRouter()
 
 @router.post("/users/", response_model=schemas.User)
-async def create_user(user: schemas.UserCreate, db = Depends(get_database)):
+@traced_function()
+async def create_user(user: schemas.UserCreate, db = Depends(get_database), request: Request = None, session_id: str = None):
     try:
         # Check if user already exists
         existing_user = db.users.find_one({"email": user.email})
@@ -45,7 +47,8 @@ async def create_user(user: schemas.UserCreate, db = Depends(get_database)):
         )
 
 @router.get("/users/{user_id}/projects", response_model=List[schemas.Project])
-async def list_user_projects(user_id: str, db = Depends(get_database)):
+@traced_function()
+async def list_user_projects(user_id: str, db = Depends(get_database), request: Request = None, session_id: str = None):
     try:
         if not ObjectId.is_valid(user_id):
             raise HTTPException(status_code=400, detail="Invalid user ID")
@@ -65,10 +68,13 @@ async def list_user_projects(user_id: str, db = Depends(get_database)):
         )
 
 @router.get("/users/{user_id}/documents", response_model=List[schemas.DocumentResponse])
+@traced_function()
 async def list_user_documents(
     user_id: str, 
     include_project_docs: bool = False,
-    db = Depends(get_database)
+    db = Depends(get_database),
+    request: Request = None,
+    session_id: str = None
 ):
     try:
         if not ObjectId.is_valid(user_id):

@@ -1,14 +1,16 @@
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Request
 from typing import List
 from src.models import schemas
 from bson import ObjectId
 from config.db import get_database
 from datetime import datetime
+from src.utils.otel_tracing import traced_function
 
 router = APIRouter()
 
 @router.post("/projects/", response_model=schemas.Project)
-async def create_project(project: schemas.ProjectCreate, current_user_id: str, db = Depends(get_database)):
+@traced_function()
+async def create_project(project: schemas.ProjectCreate, current_user_id: str, db = Depends(get_database), request: Request = None, session_id: str = None):
     try:
         if not ObjectId.is_valid(current_user_id):
             raise HTTPException(status_code=400, detail="Invalid user ID")
@@ -28,7 +30,8 @@ async def create_project(project: schemas.ProjectCreate, current_user_id: str, d
         )
 
 @router.post("/projects/{project_id}/members/{user_id}")
-async def add_project_member(project_id: str, user_id: str, db = Depends(get_database)):
+@traced_function()
+async def add_project_member(project_id: str, user_id: str, db = Depends(get_database), request: Request = None, session_id: str = None):
     try:
         if not all(ObjectId.is_valid(id) for id in [project_id, user_id]):
             raise HTTPException(status_code=400, detail="Invalid project or user ID")
@@ -67,7 +70,8 @@ async def add_project_member(project_id: str, user_id: str, db = Depends(get_dat
         )
 
 @router.get("/projects/{project_id}/members", response_model=List[schemas.UserInProject])
-async def list_project_members(project_id: str, db = Depends(get_database)):
+@traced_function()
+async def list_project_members(project_id: str, db = Depends(get_database), request: Request = None, session_id: str = None):
     try:
         if not ObjectId.is_valid(project_id):
             raise HTTPException(status_code=400, detail="Invalid project ID")
@@ -98,7 +102,8 @@ async def list_project_members(project_id: str, db = Depends(get_database)):
         )
 
 @router.delete("/projects/{project_id}/members/{user_id}")
-async def remove_project_member(project_id: str, user_id: str, db = Depends(get_database)):
+@traced_function()
+async def remove_project_member(project_id: str, user_id: str, db = Depends(get_database), request: Request = None, session_id: str = None):
     try:
         if not all(ObjectId.is_valid(id) for id in [project_id, user_id]):
             raise HTTPException(status_code=400, detail="Invalid project or user ID")

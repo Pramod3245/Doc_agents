@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, status, BackgroundTasks
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, status, BackgroundTasks, Request
 from typing import List
 from src.models import schemas
 from bson import ObjectId
@@ -9,85 +9,97 @@ import shutil
 from pathlib import Path
 import subprocess
 import sys
+from opentelemetry import trace
+from src.utils.otel_tracing import traced_function
 
 router = APIRouter()
+tracer = trace.get_tracer(__name__)
 
 # Create uploads directory if it doesn't exist
 UPLOAD_DIR = Path("src/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 @router.post("/documents/", response_model=schemas.DocumentResponse)
+@traced_function()
 async def create_document(
     title: str,
     file: UploadFile = File(...),
     project_id: str = None,
     access: str = "private",
     current_user_id: str = None,
-    db = Depends(get_database)
+    db = Depends(get_database),
+    request: Request = None,
+    session_id: str = None
 ):
-    try:
-        if not ObjectId.is_valid(current_user_id):
-            raise HTTPException(status_code=400, detail="Invalid user ID")
-            
-        if project_id and not ObjectId.is_valid(project_id):
-            raise HTTPException(status_code=400, detail="Invalid project ID")
-            
-        if project_id:
-            # Check if project exists and user is member
-            project = db.projects.find_one({
-                "_id": ObjectId(project_id),
-                "$or": [
-                    {"owner_id": ObjectId(current_user_id)},
-                    {"members": ObjectId(current_user_id)}
-                ]
-            })
-            if not project:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Project not found or user is not a member"
-                )
+    with tracer.start_as_current_span("create_document", attributes={
+        "title": title,
+        "project_id": project_id or "",
+        "access": access,
+        "current_user_id": current_user_id or ""
+    }):
+        try:
+            if not ObjectId.is_valid(current_user_id):
+                raise HTTPException(status_code=400, detail="Invalid user ID")
+                
+            if project_id and not ObjectId.is_valid(project_id):
+                raise HTTPException(status_code=400, detail="Invalid project ID")
+                
+            if project_id:
+                # Check if project exists and user is member
+                project = db.projects.find_one({
+                    "_id": ObjectId(project_id),
+                    "$or": [
+                        {"owner_id": ObjectId(current_user_id)},
+                        {"members": ObjectId(current_user_id)}
+                    ]
+                })
+                if not project:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Project not found or user is not a member"
+                    )
 
-        # Create user folder if it doesn't exist
-        user_upload_dir = UPLOAD_DIR / current_user_id
-        user_upload_dir.mkdir(exist_ok=True)
-        
-        # Save file with timestamp to ensure unique names
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_")
-        safe_filename = timestamp + file.filename.replace(" ", "_")
-        file_path = user_upload_dir / safe_filename
-        
-        # Save the file
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Copy PDF to /pdfs for ingestion
-        pdfs_dir = Path("pdfs")
-        pdfs_dir.mkdir(exist_ok=True)
-        pdf_dest = pdfs_dir / safe_filename
-        shutil.copy(str(file_path), str(pdf_dest))
+            # Create user folder if it doesn't exist
+            user_upload_dir = UPLOAD_DIR / current_user_id
+            user_upload_dir.mkdir(exist_ok=True)
             
-        # Create document record
-        doc_data = {
-            "title": title,
-            "file_path": str(file_path),
-            "owner_id": ObjectId(current_user_id),
-            "project_id": ObjectId(project_id) if project_id else None,
-            "access": access,
-            "uploaded_at": datetime.utcnow()
-        }
-        
-        result = db.documents.insert_one(doc_data)
-        new_doc = db.documents.find_one({"_id": result.inserted_id})
-        return schemas.DocumentResponse(**new_doc)
-        
-    except Exception as e:
-        # Clean up file if database operation fails
-        if 'file_path' in locals() and os.path.exists(file_path):
-            os.remove(file_path)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred: {str(e)}"
-        )
+            # Save file with timestamp to ensure unique names
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_")
+            safe_filename = timestamp + file.filename.replace(" ", "_")
+            file_path = user_upload_dir / safe_filename
+            
+            # Save the file
+            with file_path.open("wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            
+            # Copy PDF to /pdfs for ingestion
+            pdfs_dir = Path("pdfs")
+            pdfs_dir.mkdir(exist_ok=True)
+            pdf_dest = pdfs_dir / safe_filename
+            shutil.copy(str(file_path), str(pdf_dest))
+                
+            # Create document record
+            doc_data = {
+                "title": title,
+                "file_path": str(file_path),
+                "owner_id": ObjectId(current_user_id),
+                "project_id": ObjectId(project_id) if project_id else None,
+                "access": access,
+                "uploaded_at": datetime.utcnow()
+            }
+            
+            result = db.documents.insert_one(doc_data)
+            new_doc = db.documents.find_one({"_id": result.inserted_id})
+            return schemas.DocumentResponse(**new_doc)
+            
+        except Exception as e:
+            # Clean up file if database operation fails
+            if 'file_path' in locals() and os.path.exists(file_path):
+                os.remove(file_path)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"An error occurred: {str(e)}"
+            )
 
 @router.get("/projects/{project_id}/documents", response_model=List[schemas.DocumentResponse])
 async def list_project_documents(
